@@ -1,5 +1,9 @@
 import { env } from "@/lib/env";
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isBodyAllowed(method: string) {
   const m = method.toUpperCase();
   return m !== "GET" && m !== "HEAD";
@@ -18,19 +22,41 @@ export async function proxyToBackend(req: Request) {
 
   const body = isBodyAllowed(req.method) ? await req.arrayBuffer() : undefined;
 
+  const attemptFetch = async () => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25_000);
+    try {
+      return await fetch(target, {
+        method: req.method,
+        headers,
+        body,
+        redirect: "manual",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
   let res: Response;
   try {
-    res = await fetch(target, {
-      method: req.method,
-      headers,
-      body,
-      redirect: "manual",
-    });
+    res = await attemptFetch();
   } catch {
-    return new Response(JSON.stringify({ error: "Backend unavailable" }), {
-      status: 502,
-      headers: { "content-type": "application/json" },
-    });
+    try {
+      await sleep(1000);
+      res = await attemptFetch();
+    } catch {
+      return new Response(
+        JSON.stringify({
+          error: "Backend unavailable",
+          hint: "Check Vercel env BACKEND_URL (must be a full https URL) and ensure Render service is running.",
+        }),
+        {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        }
+      );
+    }
   }
 
   const outHeaders = new Headers(res.headers);
